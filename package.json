@@ -21,7 +21,7 @@
     },
 	"config": {
 		"pio.deploy.converter": {
-			"name": "nodejs-server"
+			"name": "nodejs-lib"
 		}
 	}
 }

@@ -29,7 +29,7 @@ exports.for = function(module, packagePath, preAutoRoutesHandler) {
 
 		try {
 	
-		    var pioConfig = FS.readJsonSync(PATH.join(__dirname, "../.pio.json"));
+		    var pioConfig = FS.readJsonSync(PATH.join(packagePath, "../.pio.json"));
 
 		    var app = EXPRESS();
 
@@ -60,6 +60,28 @@ exports.for = function(module, packagePath, preAutoRoutesHandler) {
 					sessionStore.prefix = originalSessionPrefix + Date.now() + "-";
 				}
 			}
+
+			app.use(function (req, res, next) {
+		        var origin = null;
+		        if (req.headers.origin) {
+		            origin = req.headers.origin;
+		        } else
+		        if (req.headers.host) {
+		            origin = [
+		                (PORT === 443) ? "https" : "http",
+		                "://",
+		                req.headers.host
+		            ].join("");
+		        }
+		        res.setHeader("Access-Control-Allow-Methods", "GET");
+		        res.setHeader("Access-Control-Allow-Credentials", "true");
+		        res.setHeader("Access-Control-Allow-Origin", origin);
+		        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Cookie");
+		        if (req.method === "OPTIONS") {
+		            return res.end();
+		        }
+		        return next();
+			});
 			
 	        if (preAutoRoutesHandler) {
 	        	preAutoRoutesHandler(app, pioConfig.config["pio.service"], {
