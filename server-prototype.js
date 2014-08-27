@@ -16,6 +16,7 @@ const WAITFOR = require("waitfor");
 const Q = require("q");
 const DOT = require("dot");
 const SEND = require("send");
+const RETHINKDB = require("rethinkdb");
 
 
 var PORT = process.env.PORT || 8080;
@@ -59,6 +60,159 @@ exports.for = function(module, packagePath, preAutoRoutesHandler) {
 				app.helpers.destroyAllSessions = function() {
 					sessionStore.prefix = originalSessionPrefix + Date.now() + "-";
 				}
+			}
+			
+			var r = null;
+			if (
+				pioConfig.config["pio.service"].config &&
+				pioConfig.config["pio.service"].config.rethinkdbHost
+			) {
+				r = Object.create(RETHINKDB);
+				var tableEnsure__pending = [];
+			    r.tableEnsure = function (DB_NAME, TABLE_NAME, tableSuffix, options, callback, _previous) {
+			    	if (typeof options === "function") {
+			    		_previous = callback;
+			    		callback = options;
+			    		options = null;
+			    	}
+			    	options = options || {};
+			    	if (tableEnsure__pending !== false) {
+			    		tableEnsure__pending.push([DB_NAME, TABLE_NAME, tableSuffix, options, callback, _previous]);
+			    		return;
+			    	}
+			        return r.db(DB_NAME).table(TABLE_NAME + "__" + tableSuffix).run(r.conn, function(err) {
+			            if (err) {
+			                if (/Database .+? does not exist/.test(err.msg)) {
+			                    if (_previous === "dbCreate") return callback(err);
+			                    return r.dbCreate(DB_NAME).run(r.conn, function (err) {
+			                        if (err) {
+console.log("err.msg", err.msg);
+						                if (/Database .+? already exists/.test(err.msg)) {
+						                	// Ignore. Someone else beat us to it!
+						                	console.error("Ignoring database exists error!");
+						                } else {
+				                        	return callback(err);
+						                }
+			                        }
+			                        return r.tableEnsure(DB_NAME, TABLE_NAME, tableSuffix, options, callback, "dbCreate");
+			                    });
+			                }
+			                if (/Table .+? does not exist/.test(err.msg)) {
+			                    if (_previous === "tableCreate") return callback(err);
+			                    return r.db(DB_NAME).tableCreate(TABLE_NAME + "__" + tableSuffix).run(r.conn, function (err) {
+			                        if (err) {
+console.log("err.msg", err.msg);
+						                if (/Table .+? already exists/.test(err.msg)) {
+						                	// Ignore. Someone else beat us to it!
+						                	console.error("Ignoring table exists error!");
+						                } else {
+				                        	return callback(err);
+						                }
+			                        }
+			                        return r.tableEnsure(DB_NAME, TABLE_NAME, tableSuffix, options, callback, "tableCreate");
+			                    });
+			                }
+			                return callback(err);
+			            }
+			            function ensureIndexes(callback) {
+				            if (!options.indexes) {
+				            	return callback(null);
+				            }					            
+				            return r.db(DB_NAME).table(TABLE_NAME + "__" + tableSuffix).indexList().run(r.conn, function (err, result) {
+				                if (err) return callback(err);
+					            var waitfor = WAITFOR.parallel(callback);
+					            options.indexes.forEach(function(indexName) {
+					            	if (result.indexOf(indexName) !== -1) {
+					            		return;
+					            	}
+					            	waitfor(function(callback) {
+					            		console.log("Creating index", indexName, "on table", TABLE_NAME + "__" + tableSuffix);
+							            return r.db(DB_NAME).table(TABLE_NAME + "__" + tableSuffix).indexCreate(indexName).run(r.conn, function (err, result) {
+					                        if (err) {
+console.log("err.msg", err.msg);
+								                if (/Index .+? already exists/.test(err.msg)) {
+								                	// Ignore. Someone else beat us to it!
+								                	console.error("Ignoring index exists error!");
+								                } else {
+						                        	return callback(err);
+								                }
+					                        }
+						            		return callback(null);
+						            	});
+					            	});
+					            });
+					            return waitfor();
+					        });
+			            }
+			            return ensureIndexes(function(err) {
+			            	if (err) return callback(err);
+				            return callback(null, r.db(DB_NAME).table(TABLE_NAME + "__" + tableSuffix));
+			            });
+			        });
+			    }
+			    r.getCached = function (DB_NAME, TABLE_NAME, tableSuffix, key, callback) {
+			        return r.tableEnsure(DB_NAME, TABLE_NAME, tableSuffix, function(err, table) {
+			            if (err) return callback(err);
+			            return table.get(key).run(r.conn, function (err, result) {
+			                if (err) return callback(err);
+			                if (result) {
+			//                    console.log("Using cached data for key '" + key + "':", result.data);
+			                    return callback(null, result.data);
+			                }
+			                return callback(null, null, function (data, callback) {
+			                    return table.insert({
+			                        id: key,
+			                        data: data
+			                    }, {
+			                        upsert: true
+			                    }).run(r.conn, function (err, result) {
+			                        if (err) return callback(err);
+			                        return callback(null, data);
+			                    });
+			                });
+			            });
+			        });
+			    }
+			    function connectToRethinkDB() {
+			    	function reconnect() {
+			    		console.log("Reconnect scheduled ...");
+			    		setTimeout(function () {
+			    			connectToRethinkDB();
+			    		}, 2000);
+			    	}
+			    	console.log("Try to connect to RethinkDB ...");
+					RETHINKDB.connect({
+						host: pioConfig.config["pio.service"].config.rethinkdbHost.split(":")[0],
+						port: parseInt(pioConfig.config["pio.service"].config.rethinkdbHost.split(":")[1])
+					}, function(err, conn) {
+						if(err) {
+							console.error("Error connecting to RethinkDB host: " + pioConfig.config["pio.service"].config.rethinkdbHost, err);
+							return reconnect();
+					  	}
+  						r.conn = conn;
+
+  						conn.once("close", function () {
+  							console.log("DB connection closed!");
+  							return reconnect();
+  						});
+
+						console.log("Now that DB is connected run pending queries ...");
+						var pending = tableEnsure__pending;
+						tableEnsure__pending = false;
+						if (pending) {
+							pending.forEach(function (call) {
+								r.tableEnsure.apply(r, call);
+							});
+						}
+					});
+				}					
+				connectToRethinkDB();
+				app.use(function(req, res, next) {
+					if (r) {
+						res.r = r;
+					}
+					return next();
+				});
 			}
 
 			app.use(function (req, res, next) {
