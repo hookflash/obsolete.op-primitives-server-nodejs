@@ -50,7 +50,7 @@ exports.for = function(module, packagePath, preAutoRoutesHandler) {
 				});
 				app.use(EXPRESS_SESSION({
 					secret: 'session secret',
-					key: 'sid',
+					key: 'sid-' + PORT,
 					proxy: 'true',
 					store: sessionStore
 				}));
