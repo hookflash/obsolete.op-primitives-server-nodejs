@@ -38,6 +38,32 @@ exports.for = function(module, packagePath, preAutoRoutesHandler) {
 	        app.use(COOKIE_PARSER());
 	        app.use(BODY_PARSER());
 	        app.use(METHOD_OVERRIDE());
+
+
+			var requestCount = 0;
+
+			app.get("/_internal_status", function(req, res, next) {
+
+				if (!req.headers["x-auth-token"]) {
+					return next();
+				}
+				if (req.headers["x-auth-token"] !== pioConfig.config["pio.service"].config.internalStatusAuthToken) {
+					return next(new Error("'x-auth-token' is invalid"));
+				}
+
+				var payload = {
+					process: {
+						memoryUsage: process.memoryUsage()
+					},
+					server: {
+						requestCount: requestCount
+					}
+				};
+
+				return res.end(JSON.stringify(payload, null, 4));
+			});
+
+
 			if (
 				pioConfig.config["pio.service"].config &&
 				pioConfig.config["pio.service"].config.memcachedHost
